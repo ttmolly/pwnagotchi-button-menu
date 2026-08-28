@@ -1,56 +1,46 @@
 # pwnagotchi-button-menu
 
-GPIO on-screen power menu for [pwnagotchi64](https://github.com/ex18a/pwnagotchi64) on an i2coled 128x64.
+GPIO on-screen menu for [pwnagotchi64](https://github.com/ex18a/pwnagotchi64) on i2coled 128x64.
 
-Any button opens the menu. UP/DOWN move. OK selects. BACK closes.
+Version **0.4.0**
 
-## Buttons (BCM)
+## Controls
 
-| Button | GPIO |
-|--------|------|
-| UP | 17 |
-| DOWN | 27 |
-| LEFT | 22 |
-| RIGHT | 23 |
-| OK | 24 |
-| BACK | 25 |
+| Button | GPIO | Action |
+|--------|------|--------|
+| OK | 24 | Open menu / select |
+| BACK | 25 | Back / close |
+| UP | 17 | Move up |
+| DOWN | 27 | Move down |
+| RIGHT | 23 | Same as OK |
+| LEFT | 22 | unused |
 
-Wired to GND. Internal pull-up via `/dev/gpiomem`. No extra packages.
+## Screens
+
+- **Status** — temp, uptime, handshake count, last handshake, battery
+- **Handshakes** — files in `bettercap.handshakes`
+- **Mode** — AUTO / MANU / Stop
+- **Plugins** — custom plugins only (not `button_menu`). Writes `/etc/pwnagotchi/conf.d/zz-button-menu.toml` then restarts pwnagotchi
+- **Power** — restart pwnagotchi, restart bettercap, reboot, shutdown
+
+Stop / Reboot / Shutdown ask for confirm.
 
 ## Install
 
 ```bash
 sudo mkdir -p /usr/local/share/pwnagotchi/custom-plugins
-sudo cp button_menu.py /usr/local/share/pwnagotchi/custom-plugins/
+sudo wget -O /usr/local/share/pwnagotchi/custom-plugins/button_menu.py \
+  https://raw.githubusercontent.com/ttmolly/pwnagotchi-button-menu/main/button_menu.py
+sudo systemctl restart pwnagotchi
 ```
 
-In `/etc/pwnagotchi/config.toml`:
+Config:
 
 ```toml
 main.custom_plugins = "/usr/local/share/pwnagotchi/custom-plugins"
 
 [main.plugins.button_menu]
 enabled = true
-
-[ui.display]
-enabled = true
-type = "i2coled"
-i2c_addr = 0x3d
-width = 128
-height = 64
 ```
-
-```bash
-sudo systemctl restart pwnagotchi
-```
-
-## Menu
-
-- Close
-- Stop Pwnagotchi
-- Restart AUTO
-- Restart MANU
-- Reboot (confirm)
-- Shutdown (confirm)
 
 License: GPL-3.0
