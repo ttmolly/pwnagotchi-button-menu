@@ -1,27 +1,15 @@
 # pwnagotchi-button-menu
 
-GPIO menu for [pwnagotchi64](https://github.com/ex18a/pwnagotchi64) on 128x64 i2coled.
+GPIO DS-style menu for pwnagotchi64 on 128x64 i2coled.
 
-**v0.5.0** — DS-style icon grid (not a list).
+**v0.6.0** — 3x2 grid, OPTS, A/D on the face, place-on-face.
 
-## Controls
+OK selects. BACK backs out. MODE uses LEFT/RIGHT then OK.
 
-| Button | GPIO | Face | Grid | Inside |
-|--------|------|------|------|--------|
-| OK | 24 | Open | Enter tile | Select |
-| BACK | 25 | | Close | Back |
-| Hold BACK | 25 | | Close all | Close all |
-| UP/DOWN/LEFT/RIGHT | 17/27/22/23 | | Move on grid | Move / cycle |
+OPTS: Counter ON/OFF, Place A then D, Reset counts.
 
-## Root
+Positions saved in `/etc/pwnagotchi/button_menu.json`.
 
-Top strip: temp + handshake count.
-Tiles: STAT HS MODE / PLUG PWR. Selected tile is inverted.
-
-STAT pages cycle with LEFT/RIGHT.
-
-## Install
-
-See repo `button_menu.py`. TTL: use base64+gzip, not nano.
+Turn off any old EMP/counter plugin so labels do not double.
 
 GPL-3.0
