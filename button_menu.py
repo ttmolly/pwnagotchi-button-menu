@@ -1,6 +1,7 @@
-# button_menu v0.4.0 — pwnagotchi64 OLED menu
+# button_menu v0.4.1 — pwnagotchi64 OLED menu
 # OK opens. BACK goes up / closes. UP/DOWN move.
 # GPIO via /dev/gpiomem. No extra packages.
+# Restores face/name/status when the menu closes.
 
 import glob
 import logging
@@ -64,7 +65,7 @@ def _read(path):
 
 class ButtonMenu(plugins.Plugin):
     __author__ = "evilcrow"
-    __version__ = "0.4.0"
+    __version__ = "0.4.1"
     __license__ = "GPL3"
     __description__ = "OLED menu: status, handshakes, mode, plugins, power"
 
@@ -81,13 +82,14 @@ class ButtonMenu(plugins.Plugin):
         self._last = {n: 1 for n in PINS}
         self._last_t = {n: 0.0 for n in PINS}
         self._items = list(ROOT)
+        self._saved_ui = {}
 
     def on_loaded(self):
         fd = os.open("/dev/gpiomem", os.O_RDWR | os.O_SYNC)
         self._mem = mmap.mmap(fd, 4096)
         os.close(fd)
         threading.Thread(target=self._loop, daemon=True).start()
-        logging.info("[button_menu] v0.4.0 loaded")
+        logging.info("[button_menu] v0.4.1 loaded")
 
     def on_ready(self, agent):
         self.agent = agent
@@ -436,6 +438,12 @@ class ButtonMenu(plugins.Plugin):
         ui = self.ui or view.ROOT
         if not ui:
             return
+        if not self._saved_ui:
+            for k in HIDE:
+                try:
+                    self._saved_ui[k] = ui.get(k)
+                except Exception:
+                    self._saved_ui[k] = None
         try:
             ui.pin(HIDE)
         except Exception:
@@ -476,6 +484,12 @@ class ButtonMenu(plugins.Plugin):
             except Exception:
                 pass
         self._bg(ui, False)
+        for k, val in list(self._saved_ui.items()):
+            try:
+                ui.set(k, val if val is not None else "", force=True)
+            except Exception:
+                pass
+        self._saved_ui = {}
         try:
             ui.unpin()
         except Exception:
