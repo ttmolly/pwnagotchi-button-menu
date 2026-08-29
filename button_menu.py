@@ -1,4 +1,6 @@
-# button_menu v0.7.1 — DS grid + A/D counters + place-on-face
+
+
+# button_menu v0.7.2 — DS grid + A/D counters + place-on-face
 # OK opens/selects. BACK backs out. Hold BACK closes.
 # Place: move A, OK saves, move D, OK saves.
 
@@ -8,6 +10,7 @@ import logging
 import mmap
 import os
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -52,6 +55,9 @@ CONFIRM = ("stop", "reboot", "shutdown", "auto", "manu", "restart_pwn", "restart
 HS_EXT = (".pcap", ".pcapng", ".cap", ".hc22000", ".22000", ".hccapx")
 CFG_PATH = "/etc/pwnagotchi/button_menu.json"
 STEP = 2
+SAVE_EVERY = 10  # lifetime counters are fsynced to disk every N events;
+                 # lower this to trade SD-card wear for less possible
+                 # loss on an unclean power pull
 DEFAULTS = {
     "counter_on": True,
     "assoc_xy": [2, 20],
@@ -284,7 +290,7 @@ class MenuCanvas(Widget):
 
 class ButtonMenu(plugins.Plugin):
     __author__ = "evilcrow"
-    __version__ = "0.7.1"
+    __version__ = "0.7.2"
     __license__ = "GPL3"
     __description__ = "DS grid menu + A/D counters with place-on-face"
 
@@ -316,6 +322,7 @@ class ButtonMenu(plugins.Plugin):
         self._wait_release = False
         self.sess_assoc = 0
         self.sess_deauth = 0
+        self._cfg_lock = threading.RLock()
         self.cfg = dict(DEFAULTS)
         self.cfg["assoc_xy"] = list(DEFAULTS["assoc_xy"])
         self.cfg["deauth_xy"] = list(DEFAULTS["deauth_xy"])
@@ -327,7 +334,7 @@ class ButtonMenu(plugins.Plugin):
         os.close(fd)
         self._pullups()
         threading.Thread(target=self._loop, daemon=True).start()
-        logging.info("[button_menu] v0.7.1 loaded")
+        logging.info("[button_menu] v0.7.2 loaded")
 
     def on_ready(self, agent):
         self.agent = agent
@@ -354,34 +361,80 @@ class ButtonMenu(plugins.Plugin):
 
     def on_association(self, agent, access_point):
         self.sess_assoc += 1
-        self.cfg["assoc"] = int(self.cfg.get("assoc") or 0) + 1
-        if self.cfg["assoc"] % 10 == 0:
+        with self._cfg_lock:
+            self.cfg["assoc"] = int(self.cfg.get("assoc") or 0) + 1
+            due = self.cfg["assoc"] % SAVE_EVERY == 0
+        if due:
             self._save_cfg()
 
     def on_deauthentication(self, agent, access_point, client_station):
         self.sess_deauth += 1
-        self.cfg["deauth"] = int(self.cfg.get("deauth") or 0) + 1
-        if self.cfg["deauth"] % 10 == 0:
+        with self._cfg_lock:
+            self.cfg["deauth"] = int(self.cfg.get("deauth") or 0) + 1
+            due = self.cfg["deauth"] % SAVE_EVERY == 0
+        if due:
             self._save_cfg()
 
+    def on_unload(self, ui):
+        # Fires when the plugin is disabled at runtime (web UI/config
+        # toggle) - flush whatever hasn't hit a SAVE_EVERY checkpoint.
+        # Note this does NOT fire for `systemctl restart/stop pwnagotchi`
+        # or a reboot/poweroff - pwnagotchi's plugin manager only calls
+        # on_unload() on an explicit toggle-off. The flush in _do() below
+        # is what covers the menu's own PWN/BOOT/OFF/AUTO/MANU actions,
+        # which is the path that was actually rolling counts back.
+        self._save_cfg()
+        logging.info("[button_menu] unloaded, cfg flushed")
+
     def _load_cfg(self):
-        try:
-            with open(CFG_PATH) as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                self.cfg.update(data)
-        except Exception:
-            pass
-        self.cfg["assoc_xy"] = list(self.cfg.get("assoc_xy") or DEFAULTS["assoc_xy"])
-        self.cfg["deauth_xy"] = list(self.cfg.get("deauth_xy") or DEFAULTS["deauth_xy"])
+        with self._cfg_lock:
+            try:
+                with open(CFG_PATH) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self.cfg.update(data)
+            except Exception:
+                pass
+            self.cfg["assoc_xy"] = list(self.cfg.get("assoc_xy") or DEFAULTS["assoc_xy"])
+            self.cfg["deauth_xy"] = list(self.cfg.get("deauth_xy") or DEFAULTS["deauth_xy"])
+            # a SIGKILL mid-save can't run _save_cfg()'s own cleanup, so
+            # sweep any leftover temp files on the next clean boot
+            try:
+                for stray in glob.glob(os.path.join(os.path.dirname(CFG_PATH), ".button_menu-*.tmp")):
+                    os.unlink(stray)
+            except Exception:
+                pass
 
     def _save_cfg(self):
-        try:
-            os.makedirs(os.path.dirname(CFG_PATH), exist_ok=True)
-            with open(CFG_PATH, "w") as f:
-                json.dump(self.cfg, f)
-        except Exception as e:
-            logging.error("[button_menu] save cfg %s", e)
+        # Write to a temp file in the same dir, fsync it, then rename
+        # over the real path. os.replace() is atomic on POSIX, so a
+        # power cut mid-write can only ever leave the OLD complete file
+        # or the NEW complete file in place - never a half-written/
+        # corrupt one. Previously a torn write here made the next
+        # _load_cfg() throw, get silently swallowed, and fall back to
+        # DEFAULTS - i.e. the lifetime counters looked like they'd been
+        # reset to 0 after a hard power-off.
+        with self._cfg_lock:
+            d = os.path.dirname(CFG_PATH)
+            tmp_path = None
+            try:
+                os.makedirs(d, exist_ok=True)
+                fd, tmp_path = tempfile.mkstemp(prefix=".button_menu-", suffix=".tmp", dir=d)
+                os.chmod(tmp_path, 0o644)
+                with os.fdopen(fd, "w") as f:
+                    json.dump(self.cfg, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, CFG_PATH)
+                tmp_path = None
+            except Exception as e:
+                logging.error("[button_menu] save cfg %s", e)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
 
     def _apply_counters(self, ui):
         show = (bool(self.cfg.get("counter_on")) or self.placing) and not self.open
@@ -976,8 +1029,9 @@ class ButtonMenu(plugins.Plugin):
             elif act == "place":
                 self._start_place()
             elif act == "reset":
-                self.cfg["assoc"] = 0
-                self.cfg["deauth"] = 0
+                with self._cfg_lock:
+                    self.cfg["assoc"] = 0
+                    self.cfg["deauth"] = 0
                 self.sess_assoc = 0
                 self.sess_deauth = 0
                 self._save_cfg()
@@ -1046,6 +1100,13 @@ class ButtonMenu(plugins.Plugin):
 
     def _do(self, act):
         logging.info("[button_menu] action %s", act)
+        # Flush the lifetime counters before we tear the process down.
+        # This is the actual fix for counts looking wrong after a
+        # restart/reboot: PWN/BOOT/OFF/AUTO/MANU all kill or restart the
+        # pwnagotchi process, on_unload() does NOT fire for any of them
+        # (see the comment on that method), and the periodic every-
+        # SAVE_EVERY save may not have hit a checkpoint yet.
+        self._save_cfg()
         if act == "stop":
             _run("systemctl stop pwnagotchi")
         elif act == "auto":
@@ -1060,3 +1121,4 @@ class ButtonMenu(plugins.Plugin):
             _run("sync; sleep 1; reboot")
         elif act == "shutdown":
             _run("sync; sleep 1; poweroff")
+
